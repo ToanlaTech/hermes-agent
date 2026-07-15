@@ -93,11 +93,9 @@ jobs:
           SHA: ${{ needs.build.outputs.sha }}
         run: |
           set -eu
+          # `kubectl set image` matches containers AND initContainers by NAME,
+          # so this is robust to initContainer ordering (config-seed, plugin-sync).
           kubectl -n hermes set image statefulset/hermes \
-            hermes=ghcr.io/$OWNER/hermes-agent:$SHA
-          kubectl -n hermes patch statefulset/hermes --type=json -p="[
-            {\"op\":\"replace\",
-             \"path\":\"/spec/template/spec/initContainers/0/image\",
-             \"value\":\"ghcr.io/$OWNER/hermes-plugins:$SHA\"}
-          ]"
+            hermes=ghcr.io/$OWNER/hermes-agent:$SHA \
+            plugin-sync=ghcr.io/$OWNER/hermes-plugins:$SHA
           kubectl -n hermes rollout status statefulset/hermes --timeout=5m
