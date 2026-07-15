@@ -1,0 +1,36 @@
+# Headless service required by the StatefulSet (stable network id).
+# The gateway is outbound-only by default, so this exposes nothing publicly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes-headless
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: hermes-agent
+  ports:
+    - name: placeholder
+      port: 9119
+      targetPort: 9119
+---
+# Optional: reach the dashboard/API server from your laptop via
+#   kubectl -n hermes port-forward svc/hermes 9119:9119
+# Only useful if you actually run the dashboard or enable API_SERVER_HOST.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hermes
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: hermes-agent
+  ports:
+    - name: dashboard
+      port: 9119
+      targetPort: 9119

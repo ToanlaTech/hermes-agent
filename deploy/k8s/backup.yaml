@@ -1,0 +1,94 @@
+# Nightly backup of the Hermes data volume using DigitalOcean CSI snapshots.
+# A CronJob creates a VolumeSnapshot object; the DO CSI driver snapshots the
+# block volume at the storage layer. This avoids the ReadWriteOnce mount
+# conflict you'd hit trying to mount the live PVC into a second pod.
+#
+# Prereqs on the cluster (DOKS has these by default):
+#   - snapshot.storage.k8s.io CRDs + external-snapshotter controller
+#   - a VolumeSnapshotClass for the DO CSI driver (below)
+#
+# Retention: this creates a new snapshot each night. Prune old snapshots with
+# the second CronJob (keeps the 7 most recent).
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: do-block-storage-snap
+driver: dobs.csi.digitalocean.com
+deletionPolicy: Delete
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hermes-backup
+  namespace: hermes
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hermes-backup
+  namespace: hermes
+rules:
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hermes-backup
+  namespace: hermes
+subjects:
+  - kind: ServiceAccount
+    name: hermes-backup
+    namespace: hermes
+roleRef:
+  kind: Role
+  name: hermes-backup
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hermes-backup
+  namespace: hermes
+spec:
+  schedule: "0 3 * * *" # 03:00 daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: hermes-backup
+          restartPolicy: OnFailure
+          containers:
+            - name: snapshot
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  cat <<EOF | kubectl apply -f -
+                  apiVersion: snapshot.storage.k8s.io/v1
+                  kind: VolumeSnapshot
+                  metadata:
+                    name: hermes-data-${TS}
+                    namespace: hermes
+                    labels:
+                      app.kubernetes.io/name: hermes-agent
+                      backup: "true"
+                  spec:
+                    volumeSnapshotClassName: do-block-storage-snap
+                    source:
+                      persistentVolumeClaimName: hermes-data
+                  EOF
+                  echo "created snapshot hermes-data-${TS}"
+                  # Keep only the 7 most recent backup snapshots.
+                  kubectl -n hermes get volumesnapshot -l backup=true \
+                    --sort-by=.metadata.creationTimestamp -o name \
+                    | head -n -7 | xargs -r kubectl -n hermes delete

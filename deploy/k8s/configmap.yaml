@@ -1,0 +1,18 @@
+# Non-sensitive runtime config. Secrets go in the Secret (secret.example.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-config
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+data:
+  # Tell Hermes it runs in a container: skips host-style chmod of /opt/data
+  # (see hermes_cli/config.py:859).
+  HERMES_CONTAINER: "1"
+  # Owner uid/gid for files created under /opt/data. Must match fsGroup and
+  # the plugin-sync chown in the StatefulSet.
+  HERMES_UID: "10000"
+  HERMES_GID: "10000"
+  # Verbose plugin discovery logs — flip to "1" while debugging plugin loading.
+  HERMES_PLUGINS_DEBUG: "0"

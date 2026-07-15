@@ -1,0 +1,29 @@
+# Least-privilege: deny all ingress (gateway is outbound-only), allow only
+# HTTPS egress (LLM providers + messaging platforms) and DNS.
+# NOTE: `kubectl port-forward` bypasses NetworkPolicy (it goes API server ->
+# kubelet), so denying ingress does not break dashboard port-forwarding.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hermes
+  namespace: hermes
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hermes-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: [] # deny all inbound
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

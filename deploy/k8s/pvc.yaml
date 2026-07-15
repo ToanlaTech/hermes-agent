@@ -1,0 +1,19 @@
+# Persistent state for Hermes ($HERMES_HOME = /opt/data).
+# Holds SQLite state, sessions, memory, skills, cron and the synced plugins/.
+# SQLite is single-writer, so this is ReadWriteOnce and the StatefulSet runs
+# exactly one replica. Losing this volume = losing the agent's learned data,
+# so back it up (see backup.yaml).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hermes-data
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: do-block-storage
+  resources:
+    requests:
+      storage: 10Gi

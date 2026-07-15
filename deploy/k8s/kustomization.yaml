@@ -1,0 +1,20 @@
+# Apply everything with:  kubectl apply -k deploy/k8s
+# (secret.example.yaml is intentionally excluded — create the real Secret
+#  out-of-band, see secret.example.yaml header.)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: hermes
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - configmap.yaml
+  - service.yaml
+  - networkpolicy.yaml
+  - statefulset.yaml
+  - backup.yaml
+# CI overrides these tags to the built commit SHA via `kubectl set image`.
+images:
+  - name: ghcr.io/toanlatech/hermes-agent
+    newTag: main
+  - name: ghcr.io/toanlatech/hermes-plugins
+    newTag: main

@@ -1,0 +1,98 @@
+# Hermes runs as a SINGLETON StatefulSet, not a scalable Deployment:
+# all state lives in an embedded SQLite DB under /opt/data (single-writer),
+# so replicas>1 would corrupt state. StatefulSet's default RollingUpdate
+# terminates the old pod before creating the new one for a 1-replica set,
+# which preserves the single-writer guarantee (Recreate-like).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hermes
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+spec:
+  serviceName: hermes-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: hermes-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: hermes-agent
+    spec:
+      # Give in-flight agent turns / cron jobs time to flush on SIGTERM.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        # Make the PVC group-owned by the hermes user (uid/gid 10000).
+        fsGroup: 10000
+      initContainers:
+        # Copy versioned plugin CODE from the plugins image onto the PVC.
+        # We do NOT use --delete: runtime data the plugins generate under
+        # /opt/data/plugins (jsonl logs, data/, skills/) is preserved; only
+        # code files are overwritten with the image's pinned version.
+        - name: plugin-sync
+          image: ghcr.io/toanlatech/hermes-plugins:main # overridden by CI (set image)
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              mkdir -p /data/plugins
+              cp -a /plugins-src/. /data/plugins/
+              chown -R 10000:10000 /data/plugins
+              echo "plugin-sync: synced $(ls -1 /plugins-src | wc -l) plugin dir(s)"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: hermes
+          image: ghcr.io/toanlatech/hermes-agent:main # overridden by CI (set image)
+          imagePullPolicy: IfNotPresent
+          # Keep /init (s6-overlay PID 1) as entrypoint; only pass the command.
+          args: ["gateway", "run"]
+          envFrom:
+            - configMapRef:
+                name: hermes-config
+            - secretRef:
+                name: hermes-secrets
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1536Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+          # Portable liveness: scan /proc for the running gateway (no pgrep
+          # dependency). s6 restarts a crashed gateway internally; this catches
+          # a fully-wedged process. If you enable the API server, prefer an
+          # httpGet probe on API_SERVER_PORT instead.
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - 'for p in /proc/[0-9]*/cmdline; do tr "\0" " " < "$p" 2>/dev/null | grep -q "gateway" && exit 0; done; exit 1'
+            periodSeconds: 5
+            failureThreshold: 60 # up to 5 min to come up
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - 'for p in /proc/[0-9]*/cmdline; do tr "\0" " " < "$p" 2>/dev/null | grep -q "gateway" && exit 0; done; exit 1'
+            periodSeconds: 60
+            timeoutSeconds: 10
+            failureThreshold: 3
+      imagePullSecrets:
+        - name: ghcr-pull
+      # Reference the standalone PVC (pvc.yaml) rather than a volumeClaimTemplate
+      # so the volume survives StatefulSet deletion/recreation.
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: hermes-data

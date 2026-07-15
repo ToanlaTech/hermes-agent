@@ -1,0 +1,50 @@
+name: sync-upstream
+
+# Keep the fork's `main` current with NousResearch/hermes-agent WITHOUT
+# auto-deploying: this opens a PR into `main` that you review and merge.
+# Releasing to the cluster is a separate, deliberate step (merge main -> deploy).
+on:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Merge upstream into a sync branch
+        run: |
+          set -eu
+          git config user.name "hermes-sync-bot"
+          git config user.email "actions@github.com"
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch upstream main
+          git checkout -B sync/upstream origin/main
+          # Merge upstream; on conflict, still push so the PR surfaces it for
+          # manual resolution instead of failing silently.
+          if git merge --no-edit upstream/main; then
+            echo "merged cleanly"
+          else
+            echo "CONFLICTS — leaving markers for manual resolution in the PR"
+            git add -A
+            git commit --no-edit || true
+          fi
+          git push -f origin sync/upstream
+
+      - name: Open / update PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create --base main --head sync/upstream \
+            --title "chore: sync upstream (NousResearch/hermes-agent)" \
+            --body "Automated weekly upstream sync. Review, resolve any conflicts, then merge into \`main\`. Release with \`main\` -> \`deploy\`." \
+            2>/dev/null || echo "PR already open — branch updated."
