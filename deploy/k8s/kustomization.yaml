@@ -8,6 +8,7 @@ resources:
   - namespace.yaml
   - pvc.yaml
   - configmap.yaml
+  - configmap-seed.yaml
   - service.yaml
   - networkpolicy.yaml
   - statefulset.yaml

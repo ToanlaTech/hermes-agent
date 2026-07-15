@@ -27,6 +27,29 @@ spec:
         # Make the PVC group-owned by the hermes user (uid/gid 10000).
         fsGroup: 10000
       initContainers:
+        # Seed a baseline config.yaml onto the PVC only if none exists yet
+        # (first run / after a PVC recreate). Never overwrites Hermes's own
+        # config once present. Makes default model / plugins.enabled / MCP
+        # servers reproducible from git.
+        - name: config-seed
+          image: busybox:1.36
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              if [ -f /data/config.yaml ]; then
+                echo "config-seed: /data/config.yaml exists — leaving as-is"
+              else
+                cp /seed/config.yaml /data/config.yaml
+                chown 10000:10000 /data/config.yaml
+                echo "config-seed: seeded baseline config.yaml"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config-seed
+              mountPath: /seed
         # Copy versioned plugin CODE from the plugins image onto the PVC.
         # We do NOT use --delete: runtime data the plugins generate under
         # /opt/data/plugins (jsonl logs, data/, skills/) is preserved; only
@@ -96,3 +119,6 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: hermes-data
+        - name: config-seed
+          configMap:
+            name: hermes-config-seed

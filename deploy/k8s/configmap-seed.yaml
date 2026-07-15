@@ -1,0 +1,30 @@
+# Baseline (non-secret) config.yaml seeded onto the PVC ONLY on first run
+# (when /opt/data/config.yaml is absent). After that Hermes owns the file and
+# may self-modify it (onboarding, `hermes config set`, dashboard, learned
+# skills) — the seed never overwrites an existing config. This makes the
+# critical settings reproducible if the PVC is recreated, without fighting
+# Hermes's mutable-config design. Hermes merges its defaults over this sparse
+# file on load, so only the keys we care about need to be here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-config-seed
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+data:
+  config.yaml: |
+    model:
+      default: deepseek/deepseek-v4-flash
+      provider: auto
+      base_url: https://openrouter.ai/api/v1
+    plugins:
+      enabled:
+        - hello_k8s
+    # Add in-cluster MCP servers here (use k8s Service DNS, never
+    # host.docker.internal), e.g.:
+    # mcp_servers:
+    #   dvdrental:
+    #     url: http://dvdrental-mcp.hermes.svc.cluster.local:8686/sse
+    #     transport: sse
+    mcp_servers: {}
