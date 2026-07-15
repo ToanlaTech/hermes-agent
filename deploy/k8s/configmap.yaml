@@ -20,3 +20,12 @@ data:
   # Its form-login auth gate engages automatically on non-loopback binds and
   # requires HERMES_DASHBOARD_BASIC_AUTH_USERNAME/_PASSWORD (in hermes-secrets).
   HERMES_DASHBOARD: "1"
+  # OpenAI-compatible API server (gateway/platforms/api_server.py). It is
+  # auto-enabled because hermes-secrets carries API_SERVER_KEY; by default it
+  # binds 127.0.0.1:8642 (loopback only). Bind 0.0.0.0 so the Service/ingress
+  # can reach it. Auth is the API_SERVER_KEY bearer token (in hermes-secrets) —
+  # required on every route, so a non-loopback bind is still gated.
+  API_SERVER_HOST: "0.0.0.0"
+  API_SERVER_PORT: "8642"
+  # If you call the API from a browser (JS fetch), set the allowed origins:
+  # API_SERVER_CORS_ORIGINS: "https://your-frontend.example.com"

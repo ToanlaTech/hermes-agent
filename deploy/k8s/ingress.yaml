@@ -33,3 +33,42 @@ spec:
   tls:
     - hosts: [hermes.operamind.one]
       secretName: hermes-dashboard-tls
+---
+# Exposes the OpenAI-compatible API server at api.operamind.one → hermes:8642.
+# Deliberately a SEPARATE host (not a path on the dashboard) so the API surface
+# is isolated. Every route is gated by the API_SERVER_KEY bearer token
+# (hmac-compared), so there is no ingress-level auth on top.
+#
+# Streaming: /api/sessions/{id}/chat/stream and /v1/runs/{id}/events are SSE, so
+# response buffering is disabled and read timeouts are raised. proxy-body-size
+# matches the API server's 10 MB MAX_REQUEST_BYTES.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hermes-api
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.operamind.one
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hermes
+                port:
+                  number: 8642
+  tls:
+    - hosts: [api.operamind.one]
+      secretName: hermes-api-tls
