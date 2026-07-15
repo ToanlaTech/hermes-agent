@@ -30,6 +30,11 @@ jobs:
         with:
           submodules: recursive # pull hermes-plugins at its pinned commit
           fetch-depth: 0
+          # hermes-plugins is a SEPARATE private repo, so the default
+          # GITHUB_TOKEN can't clone it. Provide a PAT (classic: repo scope, or
+          # fine-grained: read Contents on hermes-plugins) as secret
+          # SUBMODULE_TOKEN. Falls back to GITHUB_TOKEN if you make the repo public.
+          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
 
       - id: vars
         run: |
