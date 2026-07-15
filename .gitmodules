@@ -1,0 +1,3 @@
+[submodule "hermes-plugins"]
+	path = hermes-plugins
+	url = https://github.com/ToanlaTech/hermes-plugins.git
