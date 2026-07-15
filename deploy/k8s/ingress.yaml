@@ -1,0 +1,36 @@
+# Exposes the Hermes dashboard at hermes.operamind.one via the shared
+# ingress-nginx controller. The dashboard has its OWN form-login auth gate
+# (HERMES_DASHBOARD_BASIC_AUTH_* creds), which fails closed on non-loopback
+# binds, so we don't add ingress-level basic-auth on top.
+#
+# TLS: uncomment the tls block + cert-manager annotation once a ClusterIssuer
+# exists (see deploy/README.md "TLS"). Until then this serves HTTP only —
+# acceptable for testing, NOT for long-term use (login password is sent in
+# clear over HTTP).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hermes-dashboard
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: hermes.operamind.one
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hermes
+                port:
+                  number: 9119
+  # tls:
+  #   - hosts: [hermes.operamind.one]
+  #     secretName: hermes-dashboard-tls

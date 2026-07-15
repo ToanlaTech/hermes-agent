@@ -16,3 +16,7 @@ data:
   HERMES_GID: "10000"
   # Verbose plugin discovery logs — flip to "1" while debugging plugin loading.
   HERMES_PLUGINS_DEBUG: "0"
+  # Serve the web dashboard on 0.0.0.0:9119 (exposed via ingress.yaml).
+  # Its form-login auth gate engages automatically on non-loopback binds and
+  # requires HERMES_DASHBOARD_BASIC_AUTH_USERNAME/_PASSWORD (in hermes-secrets).
+  HERMES_DASHBOARD: "1"

@@ -11,6 +11,7 @@ resources:
   - service.yaml
   - networkpolicy.yaml
   - statefulset.yaml
+  - ingress.yaml
   - backup.yaml
 # CI overrides these tags to the built commit SHA via `kubectl set image`.
 images:

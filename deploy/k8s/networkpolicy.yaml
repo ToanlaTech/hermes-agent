@@ -14,7 +14,15 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  ingress: [] # deny all inbound
+  ingress:
+    # Allow the shared ingress-nginx controller to reach the dashboard (9119).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 9119
   egress:
     - to:
         - ipBlock:
