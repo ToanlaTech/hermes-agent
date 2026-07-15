@@ -111,6 +111,40 @@ Token separation: `hermes-submodule-ro` (repo) and `hermes-ghcr-pull`
 - Default model: `deepseek/deepseek-v4-flash` via OpenRouter
   (`model.default` in `/opt/data/config.yaml`)
 - Backup: `hermes-backup` CronJob, DO CSI VolumeSnapshot nightly 03:00, keep 7
+- Dashboard: https://hermes.operamind.one (form login, creds in `hermes-secrets`)
+- Init containers (run in order): `config-seed` (busybox) → `plugin-sync`
+
+## Dashboard exposure (hermes.operamind.one)
+
+The web dashboard is served publicly with two independent protection layers:
+
+- **App auth**: `HERMES_DASHBOARD=1` makes the gateway serve the dashboard on
+  `0.0.0.0:9119`. Its form-login gate engages on any non-loopback bind and
+  **fails closed** unless `HERMES_DASHBOARD_BASIC_AUTH_USERNAME/_PASSWORD` are
+  set (stored in `hermes-secrets`).
+- **TLS**: `ingress.yaml` routes `hermes.operamind.one` → `hermes:9119` via the
+  shared `ingress-nginx` controller (LB IP `137.184.251.25`). cert-manager
+  issues a Let's Encrypt cert through the existing cluster-wide
+  `letsencrypt-prod` ClusterIssuer; HTTP is force-redirected to HTTPS.
+
+DNS: an `A` record `hermes` → `137.184.251.25` at the registrar (Mắt Bão).
+`NetworkPolicy` allows ingress only from the `ingress-nginx` namespace to 9119.
+
+Change the dashboard password:
+```bash
+kubectl -n hermes patch secret hermes-secrets --type=merge \
+  -p '{"stringData":{"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD":"<new>"}}'
+kubectl -n hermes rollout restart statefulset/hermes
+```
+
+## Config reproducibility (config-seed)
+
+`config.yaml` lives on the PVC and is mutable (Hermes self-modifies it). It is
+NOT a read-only ConfigMap mount — that would break Hermes. Instead the
+`config-seed` initContainer copies a baseline `config.yaml` (from ConfigMap
+`hermes-config-seed`: default model, `plugins.enabled`, MCP servers) onto the
+PVC **only when absent**, so a PVC recreate restores the critical settings
+without ever overwriting Hermes's live config.
 
 ## Everyday operations
 
@@ -154,4 +188,15 @@ kubectl -n hermes exec hermes-0 -c hermes -- ls /opt/data/plugins
   working, regenerate and update the GitHub secret / cluster secret respectively.
 - First-time only: `kubectl apply -k deploy/k8s` must run once to create the
   StatefulSet before CI's `kubectl set image` has something to update.
+- Init-image updates go by NAME, not index: CI uses
+  `kubectl set image ... plugin-sync=...` (not a JSON-path patch on
+  `initContainers/0`) so adding/reordering initContainers (e.g. config-seed)
+  can't misfire. `config-seed` uses a static `busybox` image CI never touches.
+- **DO block-storage (RWO) attach desync**: triggering many StatefulSet
+  rollouts in quick succession can leave the volume with `attached=true` in the
+  VolumeAttachment while the block device is absent on the node — the pod hangs
+  in `Init` with `mkfs.ext4 ... does not exist`. Fix: delete the stale
+  VolumeAttachment for the PV so the attacher reattaches cleanly (blkid then
+  finds the existing ext4 and mounts without formatting — data is safe). Avoid
+  rapid back-to-back rollouts on the single RWO volume.
 ```
