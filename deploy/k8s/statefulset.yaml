@@ -32,7 +32,7 @@ spec:
         # /opt/data/plugins (jsonl logs, data/, skills/) is preserved; only
         # code files are overwritten with the image's pinned version.
         - name: plugin-sync
-          image: ghcr.io/toanlatech/hermes-plugins:main # overridden by CI (set image)
+          image: ghcr.io/toanlatech/hermes-plugins:deploy # overridden by CI (set image)
           imagePullPolicy: IfNotPresent
           command:
             - /bin/sh
@@ -48,7 +48,7 @@ spec:
               mountPath: /data
       containers:
         - name: hermes
-          image: ghcr.io/toanlatech/hermes-agent:main # overridden by CI (set image)
+          image: ghcr.io/toanlatech/hermes-agent:deploy # overridden by CI (set image)
           imagePullPolicy: IfNotPresent
           # Keep /init (s6-overlay PID 1) as entrypoint; only pass the command.
           args: ["gateway", "run"]

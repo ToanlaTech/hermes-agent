@@ -15,6 +15,6 @@ resources:
 # CI overrides these tags to the built commit SHA via `kubectl set image`.
 images:
   - name: ghcr.io/toanlatech/hermes-agent
-    newTag: main
+    newTag: deploy
   - name: ghcr.io/toanlatech/hermes-plugins
-    newTag: main
+    newTag: deploy
