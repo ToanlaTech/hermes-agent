@@ -23,6 +23,19 @@ spec:
     - host: hermes.operamind.one
       http:
         paths:
+          # Public file drop — a more-specific prefix than "/", so ingress-nginx
+          # routes it to the auth-free files-server sidecar (see statefulset.yaml
+          # + files-server.yaml) instead of the login-gated dashboard. Serves
+          # whatever Hermes writes under /opt/data/files (html/docx/xlsx/txt/...).
+          # Must bypass the dashboard: these URLs are opened without an auth
+          # cookie (Telegram WebViews, direct download links, etc.).
+          - path: /files/
+            pathType: Prefix
+            backend:
+              service:
+                name: hermes
+                port:
+                  number: 8081
           - path: /
             pathType: Prefix
             backend:

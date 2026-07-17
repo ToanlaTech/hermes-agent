@@ -38,6 +38,11 @@ spec:
             - -c
             - |
               set -eu
+              # Public file-drop dir served by the files-server sidecar. Create
+              # it up front (with hermes ownership) so the agent can write here
+              # and the sidecar's read-only subPath mount always resolves.
+              mkdir -p /data/files
+              chown 10000:10000 /data/files
               if [ -f /data/config.yaml ]; then
                 echo "config-seed: /data/config.yaml exists — leaving as-is"
               else
@@ -111,6 +116,49 @@ spec:
             periodSeconds: 60
             timeoutSeconds: 10
             failureThreshold: 3
+        # Public file server. Serves anything Hermes writes under
+        # /opt/data/files at https://hermes.operamind.one/files/ — .html renders,
+        # .docx/.xlsx/.txt/etc download (nginx sets the MIME type). It runs IN
+        # this pod on purpose: the hermes-data PVC is RWO single-attach on DO, so
+        # only a co-located container can share it. It mounts ONLY the `files`
+        # subdir, read-only — it never sees config.yaml, secrets, or the DB.
+        - name: files-server
+          image: nginx:1.27-alpine
+          # Run as the hermes uid so nginx can read the agent's 0600 files, and
+          # skip the stock docker-entrypoint (its scripts write to root-owned
+          # paths and would fail as non-root) by exec'ing nginx directly.
+          securityContext:
+            runAsUser: 10000
+            runAsGroup: 10000
+          command: ["nginx", "-g", "daemon off;"]
+          ports:
+            - containerPort: 8081
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /srv/files
+              subPath: files
+              readOnly: true
+            - name: files-nginx-conf
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 30
       imagePullSecrets:
         - name: ghcr-pull
       # Reference the standalone PVC (pvc.yaml) rather than a volumeClaimTemplate
@@ -122,3 +170,6 @@ spec:
         - name: config-seed
           configMap:
             name: hermes-config-seed
+        - name: files-nginx-conf
+          configMap:
+            name: hermes-files-nginx

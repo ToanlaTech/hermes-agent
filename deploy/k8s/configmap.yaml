@@ -7,6 +7,12 @@ metadata:
   labels:
     app.kubernetes.io/name: hermes-agent
 data:
+  # Timezone: Asia/Ho_Chi_Minh (Hanoi, UTC+7). HERMES_TIMEZONE is the highest
+  # priority source for Hermes's own clock (hermes_time.now(), cron anchoring —
+  # see hermes_time.py). TZ aligns the OS/libc side too so `date`, log
+  # timestamps, and subprocesses match. Image ships tzdata for this zone.
+  HERMES_TIMEZONE: "Asia/Ho_Chi_Minh"
+  TZ: "Asia/Ho_Chi_Minh"
   # Tell Hermes it runs in a container: skips host-style chmod of /opt/data
   # (see hermes_cli/config.py:859).
   HERMES_CONTAINER: "1"

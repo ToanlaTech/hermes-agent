@@ -14,6 +14,7 @@ resources:
   - statefulset.yaml
   - ingress.yaml
   - backup.yaml
+  - files-server.yaml
 # CI overrides these tags to the built commit SHA via `kubectl set image`.
 images:
   - name: ghcr.io/toanlatech/hermes-agent

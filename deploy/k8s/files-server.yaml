@@ -1,0 +1,63 @@
+# nginx config for the files-server sidecar (see statefulset.yaml).
+# Serves the public file drop at /files/ from the read-only PVC subdir mounted
+# at /srv/files. Directory listing is on, so /files/ shows an index of whatever
+# Hermes has written; individual files are reachable by name.
+#
+# CRITICAL: the whole nginx process runs as uid/gid 10000 (set via the pod's
+# securityContext, not the nginx `user` directive — nginx's `user` needs a name,
+# not a numeric id). 10000 is the SAME identity Hermes writes files as. Agent
+# files are typically mode 0600 (owner-only), so a worker running as the stock
+# `nginx` user (uid 101) would 403 on every file. Running as non-root also means
+# pid/temp paths must live under /tmp (below).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hermes-files-nginx
+  namespace: hermes
+  labels:
+    app.kubernetes.io/name: hermes-agent
+data:
+  nginx.conf: |
+    worker_processes auto;
+    error_log /var/log/nginx/error.log notice;
+    pid /tmp/nginx.pid;
+
+    events { worker_connections 1024; }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+        sendfile      on;
+        access_log    /var/log/nginx/access.log;
+
+        # Non-root worker (uid 10000) can't write nginx's default temp dirs
+        # under /var/cache/nginx, so point them at /tmp.
+        client_body_temp_path /tmp/client_temp;
+        proxy_temp_path       /tmp/proxy_temp;
+        fastcgi_temp_path     /tmp/fastcgi_temp;
+        uwsgi_temp_path       /tmp/uwsgi_temp;
+        scgi_temp_path        /tmp/scgi_temp;
+
+        server {
+            listen 8081;
+            server_name _;
+            root /srv;
+
+            # Public file drop. Ingress passes the full path through, so requests
+            # arrive as /files/<name>; root /srv maps them to /srv/files/<name>.
+            # index.html (if present) renders; otherwise the dir is listed. Other
+            # types (docx/xlsx/txt/pdf/...) download with the right MIME type.
+            location /files/ {
+                autoindex on;
+                autoindex_localtime on;
+                add_header Cache-Control "no-cache";
+            }
+            location = /files { return 301 /files/; }
+
+            # Probe target (see the sidecar's readiness/liveness probes).
+            location = /healthz {
+                add_header Content-Type text/plain;
+                return 200 "ok\n";
+            }
+        }
+    }

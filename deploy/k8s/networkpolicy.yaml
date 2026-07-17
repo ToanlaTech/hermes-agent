@@ -27,6 +27,11 @@ spec:
           port: 9119
         - protocol: TCP
           port: 8642
+        # files-server sidecar (public file drop at /files/). Content here is
+        # intentionally public; the sidecar only exposes the /opt/data/files
+        # subdir, never the rest of the volume.
+        - protocol: TCP
+          port: 8081
   egress:
     - to:
         - ipBlock:
