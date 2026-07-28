@@ -5034,10 +5034,19 @@ def _agent_cbs(sid: str) -> dict:
         "notice_clear_callback": lambda key: _emit(
             "notification.clear", sid, {"key": key}
         ),
-        "clarify_callback": lambda q, c: _block(
+        "clarify_callback": lambda q, c, multi_select=False: _block(
             "clarify.request",
             sid,
-            {"question": q, "choices": c},
+            # multi_select is a pass-through hint: renderers with checkbox
+            # support can honor it; older renderers ignore the extra field
+            # and stay single-select (a single answer still parses as a
+            # one-element list on the tool side). Only emitted when True so
+            # single-select payloads keep the exact pre-multi-select shape.
+            (
+                {"question": q, "choices": c, "multi_select": True}
+                if multi_select
+                else {"question": q, "choices": c}
+            ),
             timeout=_clarify_timeout_seconds(),
         ),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
@@ -6378,16 +6387,25 @@ def _append_inflight_delta(session: dict, delta: Any) -> None:
     session["inflight_turn"] = turn
 
 
-def _replace_inflight_user(session: dict, text: Any) -> None:
-    """Reflect an accepted correction as the live turn's current user text."""
-    user = _inflight_text(text)
-    if not user:
+def _record_inflight_correction(session: dict, text: Any) -> None:
+    """Record an accepted mid-turn correction on the live turn.
+
+    The correction is appended, never written over ``user``: a resuming client
+    must be able to rebuild BOTH bubbles. Overwriting the slot erased the
+    prompt that started the turn from the only snapshot resume can read, so a
+    reconnect (or a dev hot-reload that wipes the renderer cache) repainted the
+    thread with the user's original message missing.
+    """
+    correction = _inflight_text(text)
+    if not correction:
         return
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
         return
     turn = dict(turn)
-    turn["user"] = user
+    corrections = list(turn.get("corrections") or [])
+    corrections.append(correction)
+    turn["corrections"] = corrections
     turn["updated_at"] = time.time()
     session["inflight_turn"] = turn
 
@@ -6680,7 +6698,7 @@ def _handle_busy_submit(
         try:
             if agent.redirect(plain_text):
                 with session["history_lock"]:
-                    _replace_inflight_user(session, plain_text)
+                    _record_inflight_correction(session, plain_text)
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "redirected"})
         except Exception:
@@ -6751,6 +6769,11 @@ def _inflight_snapshot(session: dict) -> dict | None:
         "streaming": streaming,
         "user": user,
     }
+    corrections = [c for c in (turn.get("corrections") or []) if str(c).strip()]
+    if corrections:
+        # Mid-turn redirects. Carried alongside the original prompt (not over
+        # it) so resume can rebuild every user bubble the turn produced.
+        snapshot["corrections"] = [str(c) for c in corrections]
     if error:
         # Retained failed turn (see _fail_inflight_turn): carry the error
         # semantics so a resuming client can rebuild the failed-turn bubble
@@ -10289,6 +10312,9 @@ def _(rid, params: dict) -> dict:
             history = [dict(msg) for msg in session.get("history", [])]
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
+        count = params.get("count")
+        if isinstance(count, int) and count > 0:
+            history = history[:count]
         new_key = _new_session_key()
         new_sid = uuid.uuid4().hex[:8]
         source = _session_source(session)
@@ -10392,7 +10418,19 @@ def _(rid, params: dict) -> dict:
         if lease is not None:
             lease.release()
         return _err(rid, 5000, f"agent init failed on branch: {e}")
-    return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
+    branched_session = _sessions.get(new_sid)
+    return _ok(
+        rid,
+        {
+            "session_id": new_sid,
+            "stored_session_id": new_key,
+            "title": title,
+            "parent": old_key,
+            "message_count": len(history),
+            "messages": _history_to_messages(history),
+            "info": _session_info(agent, branched_session),
+        },
+    )
 
 
 @method("session.interrupt")
@@ -10744,7 +10782,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5000, f"redirect failed: {exc}")
     if accepted:
         with session["history_lock"]:
-            _replace_inflight_user(session, text)
+            _record_inflight_correction(session, text)
             session["last_active"] = time.time()
     return _ok(
         rid,
@@ -13342,6 +13380,70 @@ def _(rid, params: dict) -> dict:
                 agent.verbose_logging = nv == "verbose"
         return _ok(rid, {"key": key, "value": nv})
 
+    if key == "focus":
+        # Focus view — display-only reduced-output mode (/focus). Composes with
+        # the tool_progress machinery rather than duplicating it: enabling it
+        # pins tool_progress to "off" (the same value /verbose off uses) after
+        # stashing the configured mode, and disabling it restores that mode.
+        # Nothing about the request payload changes.
+        from hermes_cli.focus_view import (
+            FOCUS_TOOL_PROGRESS_MODE,
+            normalize_tool_progress_mode,
+            resolve_focus_arg,
+        )
+
+        cfg_f = _load_cfg()
+        _display_f = cfg_f.get("display")
+        d_f: dict = _display_f if isinstance(_display_f, dict) else {}
+        cur_focus = bool(d_f.get("focus_view", False))
+        action, target = resolve_focus_arg(str(value or ""), cur_focus)
+        if action == "usage":
+            return _err(rid, 4002, f"unknown focus value: {value} (use on|off|status)")
+        if action == "status" or target is None:
+            return _ok(
+                rid,
+                {
+                    "key": key,
+                    "value": "on" if cur_focus else "off",
+                    "tool_progress": _load_tool_progress_mode(),
+                },
+            )
+
+        if target:
+            saved = normalize_tool_progress_mode(
+                (d_f.get("focus_saved_tool_progress") or _load_tool_progress_mode())
+                if cur_focus
+                else _load_tool_progress_mode()
+            )
+            _write_config_key("display.focus_saved_tool_progress", saved)
+            _write_config_key("display.tool_progress", FOCUS_TOOL_PROGRESS_MODE)
+            effective = FOCUS_TOOL_PROGRESS_MODE
+        else:
+            saved = normalize_tool_progress_mode(
+                d_f.get("focus_saved_tool_progress") or "all"
+            )
+            _write_config_key("display.tool_progress", saved)
+            effective = saved
+        _write_config_key("display.focus_view", bool(target))
+
+        if session:
+            session["focus_view"] = bool(target)
+            session["tool_progress_mode"] = effective
+            agent_f = session.get("agent")
+            if agent_f is not None:
+                try:
+                    agent_f.tool_progress_mode = effective
+                except Exception:
+                    pass
+        return _ok(
+            rid,
+            {
+                "key": key,
+                "value": "on" if target else "off",
+                "tool_progress": effective,
+            },
+        )
+
     if key in {"approval_mode", "approvals.mode"}:
         raw = str(value or "").strip().lower()
         if raw not in _APPROVAL_MODES:
@@ -14529,6 +14631,13 @@ def _(rid, params: dict) -> dict:
             display.get("tui_statusbar", "top") if isinstance(display, dict) else "top"
         )
         return _ok(rid, {"value": _coerce_statusbar(raw)})
+    if key == "focus":
+        display = _load_cfg().get("display")
+        on = bool(display.get("focus_view", False)) if isinstance(display, dict) else False
+        return _ok(
+            rid,
+            {"value": "on" if on else "off", "tool_progress": _load_tool_progress_mode()},
+        )
     if key == "mouse":
         display = _load_cfg().get("display")
         return _ok(rid, {"value": _display_mouse_tracking(display)})
@@ -14987,6 +15096,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "moa",
         "undo",
         "learn",
+        "init",
         "compress",
         "compact",
     }
@@ -15338,6 +15448,14 @@ def _(rid, params: dict) -> dict:
         from agent.learn_prompt import build_learn_prompt
 
         return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
+    if name == "init":
+        # Generate-or-update AGENTS.md: build the guidance-laden prompt and
+        # submit it as a normal agent turn (same pattern as /learn). The live
+        # agent scans the project with its own read-only tools and writes or
+        # merge-updates AGENTS.md via write_file. Works on any backend.
+        from hermes_cli.init_command import build_init_prompt_for_cwd
+
+        return _ok(rid, {"type": "send", "message": build_init_prompt_for_cwd(extra=arg)})
     if name == "moa":
         # /moa is one-shot sugar only: run a single prompt through the default
         # MoA preset, then restore the prior model. To *switch* to a MoA preset
@@ -15400,6 +15518,49 @@ def _(rid, params: dict) -> dict:
             )
         except Exception as exc:
             return _err(rid, 5030, f"moa unavailable: {exc}")
+
+    if name == "focus":
+        # /focus is display-only. Route it through the same config.set branch the
+        # Ink TUI slash command uses so both surfaces share one state machine and
+        # one persistence path. Returns a plain notice line for the transcript.
+        from hermes_cli.focus_view import (
+            format_focus_status,
+            format_focus_toggle_message,
+            resolve_focus_arg,
+        )
+
+        _display_focus = _load_cfg().get("display")
+        _d_focus: dict = _display_focus if isinstance(_display_focus, dict) else {}
+        _cur_focus = bool(_d_focus.get("focus_view", False))
+        _action, _target = resolve_focus_arg(arg, _cur_focus)
+        if _action == "usage":
+            return _err(rid, 4004, "usage: /focus [on|off|status]")
+        if _action == "status":
+            _saved = _d_focus.get("focus_saved_tool_progress") or _load_tool_progress_mode()
+            return _ok(
+                rid,
+                {"type": "exec", "output": format_focus_status(_cur_focus, _saved)},
+            )
+        _res = _methods["config.set"](
+            rid,
+            {
+                "key": "focus",
+                "value": "on" if _target else "off",
+                "session_id": params.get("session_id", ""),
+            },
+        )
+        if "error" in _res:
+            return _res
+        _payload = _res.get("result") or {}
+        return _ok(
+            rid,
+            {
+                "type": "exec",
+                "output": format_focus_toggle_message(
+                    bool(_target), _payload.get("tool_progress") or "all"
+                ),
+            },
+        )
 
     if name == "retry":
         if not session:
@@ -15975,6 +16136,31 @@ def _fuzzy_basename_rank(name: str, query: str) -> tuple[int, int] | None:
     return None
 
 
+def _abs_completion_prefix_exists(path_part: str) -> bool:
+    """True when ``path_part`` reads sensibly as an absolute path.
+
+    A leading `/` is only meant literally if something is actually there:
+    the parent directory has to exist, and a partially-typed final segment
+    has to match at least one of its entries. Used to decide whether
+    `@/foo` is the absolute `/foo` or shorthand for `foo` under the cwd.
+    """
+    expanded = _normalize_completion_path(path_part)
+    parent = os.path.dirname(expanded.rstrip("/")) or "/"
+    tail = os.path.basename(expanded.rstrip("/"))
+
+    if not os.path.isdir(parent):
+        return False
+
+    if not tail or expanded.endswith("/"):
+        return os.path.isdir(expanded) or expanded == "/"
+
+    try:
+        tail_lower = tail.lower()
+        return any(e.lower().startswith(tail_lower) for e in os.listdir(parent))
+    except OSError:
+        return False
+
+
 @method("complete.path")
 def _(rid, params: dict) -> dict:
     word = params.get("word", "")
@@ -16010,6 +16196,21 @@ def _(rid, params: dict) -> dict:
             prefix_tag = ""
             path_part = query if is_context else query
 
+        # `@/foo` almost always means "foo, from here" rather than the absolute
+        # `/foo`: the `@` already says "this is a path", so the slash reads as a
+        # separator people type out of habit. Take the absolute reading only
+        # when something is actually there, else drop the slash and resolve
+        # relative to the cwd — otherwise `@/Desktop` dead-ends on a directory
+        # that exists one level down. Real absolute paths (`@/usr/local`,
+        # `@/etc/hosts`) still resolve, since those prefixes do exist.
+        if (
+            is_context
+            and path_part.startswith("/")
+            and not path_part.startswith("//")
+            and not _abs_completion_prefix_exists(path_part)
+        ):
+            path_part = path_part.lstrip("/")
+
         # Fuzzy basename search across the repo when the user types a bare
         # name with no path separator — `@appChrome` surfaces every file
         # whose basename matches, regardless of directory depth. Matches what
@@ -16023,24 +16224,54 @@ def _(rid, params: dict) -> dict:
             and "/" not in path_part
             and prefix_tag != "folder"
         ):
-            ranked: list[tuple[tuple[int, int], str, str]] = []
-            for rel in _list_repo_files(root):
-                basename = os.path.basename(rel)
-                if basename.startswith(".") and not path_part.startswith("."):
-                    continue
-                rank = _fuzzy_basename_rank(basename, path_part)
-                if rank is None:
-                    continue
-                ranked.append((rank, rel, basename))
+            ranked: list[tuple[tuple[int, int], str, str, bool]] = []
+            walked_dirs: set[str] = set()
+            seen: set[str] = set()
+            want_hidden = path_part.startswith(".")
 
-            ranked.sort(key=lambda r: (r[0], len(r[1]), r[1]))
+            def _consider(rel: str, name: str, is_dir: bool) -> None:
+                if rel in seen or (name.startswith(".") and not want_hidden):
+                    return
+                rank = _fuzzy_basename_rank(name, path_part)
+                if rank is not None:
+                    seen.add(rel)
+                    ranked.append((rank, rel, name, is_dir))
+
+            # Seed with root's immediate children. `_list_repo_files` is capped
+            # at _FUZZY_CACHE_MAX_FILES, and outside a git repo the fallback
+            # walk can burn that whole budget on one deep subtree before ever
+            # reaching a sibling — which is why `@Desk` in a non-repo $HOME
+            # found nothing. One listdir keeps the top level always reachable.
+            try:
+                for entry in os.listdir(root):
+                    if entry not in _FUZZY_FALLBACK_EXCLUDES:
+                        _consider(entry, entry, os.path.isdir(os.path.join(root, entry)))
+            except OSError:
+                pass
+
+            for rel in _list_repo_files(root):
+                _consider(rel, os.path.basename(rel), False)
+
+                # Directories are only implied by the file listing, so rank each
+                # ancestor too. Without this a bare `@Desktop` finds nothing —
+                # a folder with no name-matching file inside it is invisible to
+                # a file-only scan, which is the "can't @ a folder by name" bug.
+                parent = os.path.dirname(rel)
+                while parent and parent not in walked_dirs:
+                    walked_dirs.add(parent)
+                    _consider(parent, os.path.basename(parent), True)
+                    parent = os.path.dirname(parent)
+
+            # Same rank tier: folders first, so `@Desktop` leads with the folder
+            # rather than a file that merely fuzzy-matches the same letters.
+            ranked.sort(key=lambda r: (r[0], not r[3], len(r[1]), r[1]))
             tag = prefix_tag or "file"
-            for _, rel, basename in ranked[:30]:
+            for _, rel, basename, is_dir in ranked[:30]:
                 items.append(
                     {
-                        "text": f"@{tag}:{rel}",
-                        "display": basename,
-                        "meta": os.path.dirname(rel),
+                        "text": f"@{'folder' if is_dir else tag}:{rel}{'/' if is_dir else ''}",
+                        "display": basename + ("/" if is_dir else ""),
+                        "meta": "dir" if is_dir else os.path.dirname(rel),
                     }
                 )
 
